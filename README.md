@@ -8,12 +8,14 @@ Point your webcam, type a description, and Haystack tells you how closely the sc
 
 Live demo: **<https://tombarr.github.io/haystack/>**
 
+![Haystack Screenshot](./screenshot.png)
+
 ---
 
 ## Features
 
-- **Zero-shot vision** — CLIP (ViT-B/32) matches frames against any text prompt without retraining
-- **Fully offline after first load** — model (~90 MB) is cached in the browser; works without internet thereafter
+- **Zero-shot vision** — On-device model matches frames against any text prompt without retraining
+- **Fully offline after first load** — models are cached in the browser; works without internet thereafter
 - **Real-time probability bar** — vertical fill with adjustable threshold marker
 - **Detection events** — hook into `onDetection()` in `App.tsx` to add recording, webhooks, or alerts
 - **Webcam dashboard** — live video with score overlay and MATCH indicator
@@ -27,7 +29,7 @@ npm install
 npm run dev
 ```
 
-Open <http://localhost:5173/haystack/> — the app will prompt for camera access, then download the CLIP model on first run (~90 MB, cached permanently after that).
+Open <http://localhost:5173/haystack/> — the app will prompt for camera access, then download the model on first run (cached permanently after that).
 
 > **Note:** The first page load triggers one automatic reload as the cross-origin isolation service worker registers itself. This is normal.
 
@@ -38,8 +40,8 @@ Open <http://localhost:5173/haystack/> — the app will prompt for camera access
 ```text
 Browser
   ├── coi-serviceworker.js    Injects COOP/COEP headers (enables SharedArrayBuffer for WASM threads)
-  ├── @xenova/transformers    Runs CLIP via ONNX/WASM, fully client-side
-  │     └── clip-vit-base-patch32   ~90 MB, cached in browser Cache API after first download
+  ├── @xenova/transformers    Runs model via ONNX/WASM, fully client-side
+  │     └── clip-vit-base-patch32   cached in browser Cache API after first download
   └── React + Vite            UI and build tooling
 ```
 
@@ -54,7 +56,7 @@ GitHub Pages can't set custom HTTP headers, so `coi-serviceworker.js` (from [gzu
 
 ### Inference loop
 
-Frames are captured at ~3 FPS via a self-scheduling `setTimeout` chain (not `requestAnimationFrame`) to avoid queuing inference calls faster than they resolve. Each frame is drawn to a hidden 224×224 canvas, converted to a Blob URL, scored by CLIP against a two-label softmax (`[your prompt, "something else"]`), then the URL is revoked.
+Frames are captured at ~3 FPS via a self-scheduling `setTimeout` chain (not `requestAnimationFrame`) to avoid queuing inference calls faster than they resolve. Each frame is drawn to a hidden 224×224 canvas, converted to a Blob URL, scored by CLIP/ SigLIP against a two-label softmax (`[your prompt, "something else"]`), then the URL is revoked.
 
 ### Detection hook
 
@@ -80,6 +82,17 @@ To enable GitHub Pages for the first time:
 3. Set source to the `gh-pages` branch, root folder
 
 ---
+
+## Supported models
+
+Haystack supports several zero-shot vision models. Larger models generally provide better accuracy but require more bandwidth and memory.
+
+| Model | ID | Size |
+| --- | --- | --- |
+| **CLIP ViT-B/32** | `Xenova/clip-vit-base-patch32` | ~90 MB (Default) |
+| **CLIP ViT-B/16** | `Xenova/clip-vit-base-patch16` | ~360 MB |
+| **CLIP ViT-L/14** | `Xenova/clip-vit-large-patch14` | ~900 MB |
+| **SigLIP B/16** | `Xenova/siglip-base-patch16-224` | ~370 MB |
 
 ## Tech stack
 
