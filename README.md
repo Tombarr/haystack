@@ -73,13 +73,13 @@ function onDetection(score: number, prompt: string): void {
 
 ## Deployment
 
-GitHub Actions automatically builds and deploys to the `gh-pages` branch on every push to `main`.
+GitHub Actions automatically builds and deploys to the `main` branch on every push to `main`.
 
 To enable GitHub Pages for the first time:
 
 1. Push to `main` and let the Action run
 2. Go to **Settings > Pages** in your repo
-3. Set source to the `gh-pages` branch, root folder
+3. Set source to the `main` branch, root folder
 
 ---
 
@@ -103,4 +103,4 @@ Haystack supports several zero-shot vision models. Larger models generally provi
 | Styling | Tailwind CSS 3 |
 | ML | `@xenova/transformers` (ONNX/WASM) |
 | Model | `Xenova/clip-vit-base-patch32` |
-| CI/CD | GitHub Actions → `peaceiris/actions-gh-pages` |
+| CI/CD | GitHub Actions & Pages |
