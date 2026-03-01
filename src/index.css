@@ -1,0 +1,20 @@
+@import "tailwindcss";
+
+/* Class-based dark mode (replaces darkMode: 'class' from tailwind.config.js) */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Custom animations (replaces theme.extend.keyframes/animation) */
+@theme {
+  --animate-flash: flash 0.6s ease-in-out;
+  --animate-pulse-match: pulse-match 0.8s ease-in-out infinite;
+}
+
+@keyframes flash {
+  0%, 100% { background-color: transparent; }
+  50% { background-color: rgba(234, 179, 8, 0.25); }
+}
+
+@keyframes pulse-match {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
