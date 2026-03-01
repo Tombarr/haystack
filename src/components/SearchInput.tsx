@@ -33,7 +33,7 @@ export default function SearchInput({
 
     if (timerRef.current) clearTimeout(timerRef.current)
     timerRef.current = setTimeout(() => {
-      onChange(val)
+      requestAnimationFrame(() => onChange(val))
     }, debounceMs)
   }
 

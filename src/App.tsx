@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import { env, pipeline, type ZeroShotImageClassificationPipeline } from '@xenova/transformers'
 import ProgressBar from './components/ProgressBar'
 import ModelSelector, { type ModelSpec } from './components/ModelSelector'
 import SearchInput from './components/SearchInput'
@@ -13,7 +12,6 @@ function onDetection(score: number, prompt: string): void {
 }
 // ────────────────────────────────────────────────────────────
 
-const INFERENCE_INTERVAL_MS = 500
 const CAPTURE_SIZE = 224
 
 const MODELS: ModelSpec[] = [
@@ -43,7 +41,8 @@ export default function App() {
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const pipelineRef = useRef<ZeroShotImageClassificationPipeline | null>(null)
+  const ctxRef = useRef<CanvasRenderingContext2D | null>(null)
+  const workerRef = useRef<Worker | null>(null)
   const isInferringRef = useRef(false)
   const promptRef = useRef(prompt)
   const thresholdRef = useRef(threshold)
@@ -52,58 +51,73 @@ export default function App() {
   // Camera is started once on first model-ready; stays on during model switches
   const cameraStartedRef = useRef(false)
 
-  // Keep refs in sync with state
+  // Initialize Worker
+  useEffect(() => {
+    workerRef.current = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })
+
+    const progressMap = new Map<string, number>()
+
+    workerRef.current.onmessage = (e) => {
+      const { type, data } = e.data
+      switch (type) {
+        case 'progress':
+          if (data.status === 'progress' && data.progress != null && data.file) {
+            progressMap.set(data.file, data.progress)
+            const total = Array.from(progressMap.values()).reduce((a, b) => a + b, 0)
+            const avg = total / progressMap.size
+            setLoadProgress(Math.round(avg))
+          }
+          break
+        case 'ready':
+          setModelStatus('ready')
+          setLoadProgress(100)
+          break
+        case 'error':
+          setModelStatus('error')
+          break
+      }
+    }
+
+    return () => {
+      workerRef.current?.terminate()
+    }
+  }, [])
+
+  // Keep refs in sync with state and update worker prompt
   useEffect(() => {
     promptRef.current = prompt
     localStorage.setItem('haystack-prompt', prompt)
-  }, [prompt])
+    workerRef.current?.postMessage({ type: 'updatePrompt', data: { prompt } })
+
+    if (!prompt.trim()) {
+      setScore(0)
+      setIsMatch(false)
+      prevMatchRef.current = false
+      isInferringRef.current = false
+    }
+  }, [prompt, modelStatus])
+
   useEffect(() => {
     thresholdRef.current = threshold
     localStorage.setItem('haystack-threshold', threshold.toString())
   }, [threshold])
+
   useEffect(() => {
     localStorage.setItem('haystack-model', selectedModel)
   }, [selectedModel])
 
   // Load (or reload) model whenever selectedModel changes
   useEffect(() => {
-    let cancelled = false
-
-    env.allowLocalModels = false
     setModelStatus('loading')
     setLoadProgress(0)
     setScore(0)
     setIsMatch(false)
     prevMatchRef.current = false
-    pipelineRef.current = null
-
-    pipeline('zero-shot-image-classification', selectedModel, {
-      progress_callback: (progress: { status: string; progress?: number }) => {
-        if (cancelled) return
-        if (progress.status === 'progress' && progress.progress != null) {
-          setLoadProgress(Math.round(progress.progress))
-        }
-      },
-    })
-      .then((pipe) => {
-        if (cancelled) return
-        pipelineRef.current = pipe as ZeroShotImageClassificationPipeline
-        setModelStatus('ready')
-        setLoadProgress(100)
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return
-        console.error('[haystack] Model load failed:', err)
-        setModelStatus('error')
-      })
-
-    return () => {
-      cancelled = true
-      pipelineRef.current = null
-    }
+    workerRef.current?.postMessage({ type: 'load', data: { modelId: selectedModel } })
   }, [selectedModel])
 
   // Start camera once, on the first time the model becomes ready
+
   useEffect(() => {
     if (modelStatus !== 'ready' || cameraStartedRef.current) return
     cameraStartedRef.current = true
@@ -123,77 +137,101 @@ export default function App() {
 
   // Inference loop — restarts each time modelStatus becomes 'ready'
   useEffect(() => {
-    if (modelStatus !== 'ready') return
+    if (modelStatus !== 'ready' || !workerRef.current) return
 
     function scheduleNext() {
-      timerRef.current = setTimeout(runInference, INFERENCE_INTERVAL_MS)
+      if (timerRef.current) clearTimeout(timerRef.current)
+      timerRef.current = setTimeout(runInference, 0)
+    }
+
+    const progressMap = new Map<string, number>()
+
+    workerRef.current.onmessage = (e) => {
+      const { type, data } = e.data
+      switch (type) {
+        case 'progress':
+          if (data.status === 'progress' && data.progress != null && data.file) {
+            progressMap.set(data.file, data.progress)
+            const total = Array.from(progressMap.values()).reduce((a, b) => a + b, 0)
+            const avg = total / progressMap.size
+            setLoadProgress(Math.round(avg))
+          }
+          break
+        case 'ready':
+          setModelStatus('ready')
+          setLoadProgress(100)
+          break
+        case 'error':
+          setModelStatus('error')
+          break
+        case 'score':
+          const { score: newScore } = data
+          setScore(newScore)
+          const matched = newScore > thresholdRef.current
+          setIsMatch(matched)
+          if (matched && !prevMatchRef.current) {
+            onDetection(newScore, promptRef.current.trim())
+          }
+          prevMatchRef.current = matched
+          isInferringRef.current = false
+          scheduleNext()
+          break
+        case 'inference-skipped':
+          isInferringRef.current = false
+          scheduleNext()
+          break
+      }
     }
 
     async function runInference() {
       const currentPrompt = promptRef.current.trim()
-      const currentThreshold = thresholdRef.current
 
-      // No prompt — clear state and idle
-      if (!currentPrompt) {
-        setScore(0)
-        setIsMatch(false)
-        prevMatchRef.current = false
-        scheduleNext()
+      if (!currentPrompt || modelStatus !== 'ready' || !workerRef.current) {
+        // If not ready or no prompt, wait and try again in 100ms
+        timerRef.current = setTimeout(runInference, 100)
         return
       }
 
-      if (isInferringRef.current || !pipelineRef.current) {
-        scheduleNext()
+      if (isInferringRef.current) {
+        // Already inferring, do nothing; the onmessage handler will schedule the next run
         return
       }
 
       const video = videoRef.current
       const canvas = canvasRef.current
       if (!video || video.readyState < 2 || !canvas) {
-        scheduleNext()
+        timerRef.current = setTimeout(runInference, 100)
         return
       }
 
-      isInferringRef.current = true
-      let blobUrl: string | null = null
+      if (!ctxRef.current) {
+        ctxRef.current = canvas.getContext('2d', { willReadFrequently: true })
+      }
+      const ctx = ctxRef.current!
 
       try {
-        const ctx = canvas.getContext('2d')!
         ctx.drawImage(video, 0, 0, CAPTURE_SIZE, CAPTURE_SIZE)
+        const imageData = ctx.getImageData(0, 0, CAPTURE_SIZE, CAPTURE_SIZE)
 
-        const blob = await new Promise<Blob | null>((resolve) =>
-          canvas.toBlob(resolve, 'image/jpeg', 0.85)
+        isInferringRef.current = true
+        workerRef.current.postMessage(
+          {
+            type: 'inference',
+            data: {
+              imageData: imageData.data.buffer,
+              captureSize: CAPTURE_SIZE,
+            },
+          },
+          [imageData.data.buffer]
         )
-        if (!blob) throw new Error('canvas.toBlob returned null')
-
-        blobUrl = URL.createObjectURL(blob)
-
-        type ClipResult = { label: string; score: number }
-        const raw = await pipelineRef.current(blobUrl, [currentPrompt, 'something else'])
-        const results = (Array.isArray(raw[0]) ? raw[0] : raw) as ClipResult[]
-        const match = results.find((r) => r.label === currentPrompt)
-        const newScore = match?.score ?? 0
-
-        setScore(newScore)
-
-        const matched = newScore > currentThreshold
-        setIsMatch(matched)
-
-        // Fire detection hook on rising edge only
-        if (matched && !prevMatchRef.current) {
-          onDetection(newScore, currentPrompt)
-        }
-        prevMatchRef.current = matched
       } catch (err) {
-        console.error('[haystack] Inference error:', err)
-      } finally {
-        if (blobUrl) URL.revokeObjectURL(blobUrl)
+        console.error('[haystack] Inference setup error:', err)
         isInferringRef.current = false
         scheduleNext()
       }
     }
 
-    scheduleNext()
+    requestAnimationFrame(scheduleNext)
 
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current)
